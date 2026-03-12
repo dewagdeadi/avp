@@ -1,5 +1,7 @@
 import os
 import uuid
+import json
+from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +39,53 @@ jobs: dict = {}
 class VideoRequest(BaseModel):
     youtube_url: str
 
+# ── History helpers ────────────────────────────────────────────────────────────
+
+def _scan_history() -> list[dict]:
+    """Rebuild history from job dirs that have a completed final_short.mp4."""
+    history = []
+    if not os.path.isdir(DOWNLOADS_DIR):
+        return history
+    for job_id in os.listdir(DOWNLOADS_DIR):
+        job_dir = os.path.join(DOWNLOADS_DIR, job_id)
+        final   = os.path.join(job_dir, "final_short.mp4")
+        meta_f  = os.path.join(job_dir, "meta.json")
+        if not os.path.isfile(final):
+            continue
+        meta = {}
+        if os.path.isfile(meta_f):
+            try:
+                with open(meta_f, encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                pass
+        # Find thumbnail
+        thumb_url = None
+        for fname in os.listdir(job_dir):
+            if fname.endswith("_thumb.jpg"):
+                thumb_url = f"/downloads/{job_id}/{fname}"
+                break
+        history.append({
+            "job_id":      job_id,
+            "url":         f"/downloads/{job_id}/final_short.mp4",
+            "thumbnail":   thumb_url,
+            "youtube_url": meta.get("youtube_url", ""),
+            "detail":      meta.get("detail", ""),
+            "created_at":  meta.get("created_at", ""),
+        })
+    history.sort(key=lambda x: x["created_at"], reverse=True)
+    return history
+
+def _save_meta(job_id: str, data: dict):
+    meta_f = os.path.join(DOWNLOADS_DIR, job_id, "meta.json")
+    try:
+        with open(meta_f, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _fmt_time(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -45,18 +94,21 @@ def _fmt_time(seconds: float) -> str:
 def _update(job_id: str, status: str, progress: int, detail: str, **extra):
     jobs[job_id] = {"status": status, "progress": progress, "detail": detail, "url": None, **extra}
 
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
 async def process_video_pipeline(youtube_url: str, job_id: str):
-    """
-    Background task: Downloads YT video, finds the best segment,
-    crops to 9:16 with face tracking, adds captions, and generates thumbnail.
-    """
     job_dir = os.path.join(DOWNLOADS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
+
+    # Save meta immediately so history can reference the source URL
+    _save_meta(job_id, {
+        "youtube_url": youtube_url,
+        "created_at":  datetime.utcnow().isoformat(),
+    })
 
     try:
         _update(job_id, "downloading", 8, "Connecting to YouTube and fetching video stream...")
 
-        # 1. Download
         dl_path = download_video(youtube_url, output_path=job_dir)
         if not dl_path:
             raise Exception("Failed to download video")
@@ -64,14 +116,12 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         file_mb = os.path.getsize(dl_path) / (1024 * 1024)
         _update(job_id, "analyzing_audio", 22, f"Downloaded {file_mb:.0f} MB — scanning audio to find the best hook...")
 
-        # 2. Find Best Segment
         start_t, end_t = extract_best_segment(dl_path, target_length_sec=45)
         clip_len = end_t - start_t
 
         _update(job_id, "trimming", 32,
                 f"Clipping {clip_len:.0f}s segment ({_fmt_time(start_t)} → {_fmt_time(end_t)}) with frame-accurate re-encode...")
 
-        # Trim with re-encode for frame-accurate A/V sync
         import subprocess
         from core.config import VIDEO_ENCODER_ARGS
         trimmed_path = os.path.join(job_dir, "trimmed.mp4")
@@ -89,7 +139,6 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         _update(job_id, "tracking_faces", 48,
                 "Detecting faces frame-by-frame — spring-damper camera panning to 9:16...")
 
-        # 3. Face Track and Crop
         cropped_path = os.path.join(job_dir, "cropped.mp4")
         track_success = track_and_crop_faces(trimmed_path, cropped_path)
         if not track_success:
@@ -98,10 +147,8 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         _update(job_id, "generating_captions", 65,
                 "Transcribing speech with Whisper AI (small model, Indonesian) — word-level timing...")
 
-        # 4. Auto-caption (Whisper) — force Indonesian language for accuracy
         srt_path = generate_subtitles(cropped_path, model_size="small", language="id")
 
-        # Count subtitle events for the detail message
         try:
             n_captions = srt_path and sum(1 for l in open(srt_path, encoding="utf-8") if l.startswith("Dialogue:"))
         except Exception:
@@ -110,7 +157,6 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         _update(job_id, "rendering_final", 80,
                 f"Burning {n_captions} caption groups into video with libass renderer...")
 
-        # 5. Burn Subtitles
         final_path = os.path.join(job_dir, "final_short.mp4")
         burn_subtitles(cropped_path, srt_path, final_path)
 
@@ -118,17 +164,23 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         _update(job_id, "generating_thumbnail", 92,
                 f"Final video is {final_mb:.1f} MB — picking best frame for thumbnail...")
 
-        # 6. Generate thumbnail
         thumb_path = generate_thumbnail(final_path)
 
-        # Return paths
         public_url = f"/downloads/{job_id}/final_short.mp4"
-        thumb_url = f"/downloads/{job_id}/{os.path.basename(thumb_path)}" if thumb_path else None
+        thumb_url  = f"/downloads/{job_id}/{os.path.basename(thumb_path)}" if thumb_path else None
+        detail     = f"Done! {clip_len:.0f}s short • {final_mb:.1f} MB • {n_captions} caption groups"
+
         jobs[job_id] = {
             "status": "completed", "progress": 100,
-            "detail": f"Done! {clip_len:.0f}s short • {final_mb:.1f} MB • {n_captions} caption groups",
-            "url": public_url, "thumbnail": thumb_url
+            "detail": detail, "url": public_url, "thumbnail": thumb_url
         }
+
+        # Persist to meta.json so history survives restarts
+        _save_meta(job_id, {
+            "youtube_url": youtube_url,
+            "created_at":  datetime.utcnow().isoformat(),
+            "detail":      detail,
+        })
 
     except Exception as e:
         print(f"Pipeline error for job {job_id}: {e}")
@@ -136,13 +188,13 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         traceback.print_exc()
         jobs[job_id] = {"status": "failed", "progress": 0, "detail": str(e), "error": str(e), "url": None}
 
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.post("/api/process")
 async def process_video_endpoint(req: VideoRequest, background_tasks: BackgroundTasks):
     job_id = f"job_{uuid.uuid4().hex[:8]}"
     jobs[job_id] = {"status": "queued", "progress": 0, "url": None}
-    
     background_tasks.add_task(process_video_pipeline, req.youtube_url, job_id)
-    
     return {"message": "Processing started", "job_id": job_id}
 
 @app.get("/api/status/{job_id}")
@@ -150,6 +202,10 @@ async def get_status(job_id: str):
     if job_id not in jobs:
         return {"status": "not_found"}
     return jobs[job_id]
+
+@app.get("/api/history")
+async def get_history():
+    return _scan_history()
 
 if __name__ == "__main__":
     import uvicorn

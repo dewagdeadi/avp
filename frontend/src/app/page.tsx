@@ -30,6 +30,15 @@ function useElapsed(running: boolean) {
   return elapsed
 }
 
+type HistoryItem = {
+  job_id: string
+  url: string
+  thumbnail: string | null
+  youtube_url: string
+  detail: string
+  created_at: string
+}
+
 export default function Home() {
   const [url, setUrl] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
@@ -39,7 +48,19 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null)
   const elapsed = useElapsed(isSubmitting)
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(`${API}/api/history`)
+      const data = await res.json()
+      setHistory(data)
+    } catch { /* silently fail */ }
+  }
+
+  useEffect(() => { fetchHistory() }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -87,6 +108,7 @@ export default function Home() {
           setVideoUrl(`${API}${data.url}`)
           setIsSubmitting(false)
           clearInterval(interval)
+          fetchHistory()
         } else if (data.status === 'failed') {
           setError(data.error || 'Processing failed')
           setIsSubmitting(false)
@@ -109,6 +131,13 @@ export default function Home() {
     setProgress(0)
     setError(null)
     setIsSubmitting(false)
+    setSelectedHistory(null)
+  }
+
+  const fmtDate = (iso: string) => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
   const currentStepIndex = STEPS.findIndex(s => s.key === status)
@@ -461,6 +490,164 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* ── History Section ─────────────────────────────────────────── */}
+      {history.length > 0 && !videoUrl && !jobId && (
+        <div style={{
+          position: 'relative', zIndex: 10,
+          maxWidth: '900px', width: '100%',
+          marginTop: '4rem',
+          textAlign: 'left',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            marginBottom: '1.25rem',
+          }}>
+            <h2 style={{
+              fontSize: '1.1rem', fontWeight: 700,
+              color: 'rgba(255,255,255,0.6)',
+              letterSpacing: '-0.01em',
+            }}>
+              Past Generations
+            </h2>
+            <span style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.25)' }}>
+              {history.length} video{history.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+            gap: '1rem',
+          }}>
+            {history.map(item => (
+              <div
+                key={item.job_id}
+                onClick={() => setSelectedHistory(item)}
+                style={{
+                  cursor: 'pointer',
+                  borderRadius: '16px',
+                  overflow: 'hidden',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  transition: 'transform 0.2s, border-color 0.2s',
+                }}
+                onMouseEnter={e => {
+                  (e.currentTarget as HTMLElement).style.transform = 'translateY(-4px)'
+                  ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(139,92,246,0.4)'
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLElement).style.transform = 'translateY(0)'
+                  ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.07)'
+                }}
+              >
+                {/* Thumbnail */}
+                <div style={{ aspectRatio: '9/16', background: '#111', overflow: 'hidden' }}>
+                  {item.thumbnail
+                    ? <img src={`${API}${item.thumbnail}`} alt="thumbnail"
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem' }}>🎬</div>
+                  }
+                </div>
+                {/* Info */}
+                <div style={{ padding: '0.65rem 0.75rem' }}>
+                  <div style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.35)', marginBottom: '0.2rem' }}>
+                    {fmtDate(item.created_at)}
+                  </div>
+                  <div style={{
+                    fontSize: '0.72rem', color: 'rgba(255,255,255,0.55)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {item.detail || item.youtube_url}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── History Modal ────────────────────────────────────────────── */}
+      {selectedHistory && (
+        <div
+          onClick={() => setSelectedHistory(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            background: 'rgba(0,0,0,0.85)',
+            backdropFilter: 'blur(12px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '2rem',
+            animation: 'fadeIn 0.2s ease-out',
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{
+            background: 'rgba(20,10,35,0.95)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: '28px',
+            padding: '2rem',
+            maxWidth: '360px',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.25rem',
+          }}>
+            {/* Phone-frame player */}
+            <div style={{
+              borderRadius: '24px',
+              overflow: 'hidden',
+              aspectRatio: '9/16',
+              background: '#000',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}>
+              <video
+                src={`${API}${selectedHistory.url}`}
+                controls autoPlay loop
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            </div>
+
+            {/* Meta */}
+            <div>
+              <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.35)', marginBottom: '0.3rem' }}>
+                {fmtDate(selectedHistory.created_at)}
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)', lineHeight: 1.5 }}>
+                {selectedHistory.detail}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <a
+                href={`${API}${selectedHistory.url}`}
+                download
+                style={{
+                  flex: 1, padding: '0.75rem',
+                  borderRadius: '12px',
+                  background: '#fff', color: '#000',
+                  fontWeight: 700, fontSize: '0.85rem',
+                  textDecoration: 'none', textAlign: 'center',
+                }}
+              >
+                ⬇️ Download
+              </a>
+              <button
+                onClick={() => setSelectedHistory(null)}
+                style={{
+                  flex: 1, padding: '0.75rem',
+                  borderRadius: '12px',
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  color: '#fff', fontWeight: 600, fontSize: '0.85rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
