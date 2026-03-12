@@ -88,38 +88,41 @@ def track_and_crop_faces(input_video_path: str, output_video_path: str, target_r
         raw_temp_path = os.path.normpath(output_video_path.replace('.mp4', '_raw.mp4'))
         out = cv2.VideoWriter(raw_temp_path, fourcc, fps, (target_width, target_height))
 
-    # Ultra-smooth cinematic panning
-    alpha = 0.03
-    DEADZONE = 50
+    # Spring-damper camera system — simulates a physical camera operator.
+    # Unlike simple lerp, this has velocity/momentum: the camera accelerates
+    # toward the face and decelerates naturally, with a subtle cinematic overshoot.
+    SPRING  = 0.06   # stiffness: how strongly camera pulls toward the target
+    DAMPING = 0.80   # velocity retention per frame (higher = more momentum/overshoot)
+    DEADZONE = 25    # px: ignore face jitter smaller than this
+
+    target_x  = float(initial_center_x)
+    camera_x  = float(initial_center_x)
+    velocity  = 0.0
+    last_detected_x = float(initial_center_x)
 
     frames_processed = 0
-    last_detected_x = initial_center_x
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Detect face every 8 frames
-        if frames_processed % 8 == 0:
+        # Detect face every 4 frames (more responsive than 8)
+        if frames_processed % 4 == 0:
             face_x = _find_face_in_frame(face_cascade, frame, frame_width)
-            if face_x is not None:
-                if abs(face_x - last_detected_x) > DEADZONE:
-                    last_detected_x = face_x
-        
-        smoothed_center_x = int(alpha * last_detected_x + (1 - alpha) * smoothed_center_x)
-            
-        start_x = max(0, smoothed_center_x - target_width // 2)
-        end_x = start_x + target_width
-        
-        if end_x > frame_width:
-            end_x = frame_width
-            start_x = frame_width - target_width
-            
-        if start_x < 0:
-            start_x = 0
-            end_x = target_width
-            
+            if face_x is not None and abs(face_x - last_detected_x) > DEADZONE:
+                last_detected_x = face_x
+                target_x = float(face_x)
+
+        # Spring force pulls camera toward target; damping bleeds off velocity
+        force     = (target_x - camera_x) * SPRING
+        velocity  = velocity * DAMPING + force
+        camera_x += velocity
+
+        # Clamp so the crop window never goes out of frame
+        camera_x = float(np.clip(camera_x, target_width // 2, frame_width - target_width // 2))
+        smoothed_center_x = int(camera_x)
+
         cropped_frame = frame[0:target_height, start_x:end_x]
         cropped_frame = cv2.resize(cropped_frame, (target_width, target_height))
         

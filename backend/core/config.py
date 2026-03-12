@@ -17,13 +17,18 @@ def ensure_ffmpeg_on_path():
         print(f"[config] Added FFmpeg to PATH: {FFMPEG_DIR}")
 
 def _check_nvenc() -> bool:
-    """Return True if h264_nvenc is available in the current FFmpeg build."""
+    """Return True if h264_nvenc actually works (driver + GPU compatible)."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+            [
+                "ffmpeg", "-hide_banner",
+                "-f", "lavfi", "-i", "color=c=black:size=128x128:duration=0.1",
+                "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20",
+                "-f", "null", "-"
+            ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
-        return "h264_nvenc" in result.stdout
+        return result.returncode == 0
     except Exception:
         return False
 
@@ -34,7 +39,7 @@ ensure_ffmpeg_on_path()
 USE_NVENC: bool = _check_nvenc()
 if USE_NVENC:
     print("[config] NVIDIA NVENC detected — GPU encoding enabled.")
-    VIDEO_ENCODER_ARGS = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"]
+    VIDEO_ENCODER_ARGS = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-pix_fmt", "yuv420p"]
 else:
     print("[config] NVENC not available — falling back to libx264.")
-    VIDEO_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
+    VIDEO_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
