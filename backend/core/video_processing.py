@@ -123,6 +123,9 @@ def track_and_crop_faces(input_video_path: str, output_video_path: str, target_r
         camera_x = float(np.clip(camera_x, target_width // 2, frame_width - target_width // 2))
         smoothed_center_x = int(camera_x)
 
+        start_x = smoothed_center_x - target_width // 2
+        end_x   = start_x + target_width
+
         cropped_frame = frame[0:target_height, start_x:end_x]
         cropped_frame = cv2.resize(cropped_frame, (target_width, target_height))
         
