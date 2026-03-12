@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Downloads / generated output
+backend/downloads/
+
+# Node
+node_modules/
+.next/
+frontend/.next/
+
+# Env
+.env
+.env.local
+
+# Claude
+.claude/

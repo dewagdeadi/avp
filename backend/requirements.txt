@@ -1,0 +1,9 @@
+fastapi[standard]
+python-multipart
+yt-dlp
+pydub
+opencv-python
+mediapipe
+faster-whisper
+ffmpeg-python
+moviepy
