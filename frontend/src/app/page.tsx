@@ -1,17 +1,45 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API = 'http://localhost:8000'
+
+const STEPS = [
+  { key: 'downloading',         label: 'Download',      icon: '⬇️' },
+  { key: 'analyzing_audio',     label: 'Analyze Audio', icon: '🎵' },
+  { key: 'trimming',            label: 'Trim Clip',     icon: '✂️' },
+  { key: 'tracking_faces',      label: 'Face Track',    icon: '👤' },
+  { key: 'generating_captions', label: 'Transcribe',    icon: '💬' },
+  { key: 'rendering_final',     label: 'Render',        icon: '🎬' },
+  { key: 'generating_thumbnail',label: 'Thumbnail',     icon: '🖼️' },
+]
+
+function useElapsed(running: boolean) {
+  const [elapsed, setElapsed] = useState(0)
+  const startRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (running) {
+      if (!startRef.current) startRef.current = Date.now()
+      const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current!) / 1000)), 1000)
+      return () => clearInterval(id)
+    } else {
+      startRef.current = null
+      setElapsed(0)
+    }
+  }, [running])
+  return elapsed
+}
 
 export default function Home() {
   const [url, setUrl] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [detail, setDetail] = useState<string | null>(null)
   const [progress, setProgress] = useState<number>(0)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const elapsed = useElapsed(isSubmitting)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -50,10 +78,11 @@ export default function Home() {
       try {
         const res = await fetch(`${API}/api/status/${jobId}`)
         const data = await res.json()
-        
+
         setStatus(data.status)
         setProgress(data.progress)
-        
+        setDetail(data.detail || null)
+
         if (data.status === 'completed') {
           setVideoUrl(`${API}${data.url}`)
           setIsSubmitting(false)
@@ -76,20 +105,14 @@ export default function Home() {
     setVideoUrl(null)
     setUrl('')
     setStatus(null)
+    setDetail(null)
     setProgress(0)
     setError(null)
     setIsSubmitting(false)
   }
 
-  const statusLabels: Record<string, string> = {
-    'queued': '⏳ Queued...',
-    'downloading': '📥 Downloading video...',
-    'analyzing_audio': '🎵 Finding the best moments...',
-    'tracking_faces': '👤 Tracking faces & cropping 9:16...',
-    'generating_captions': '💬 Generating subtitles with AI...',
-    'rendering_final': '🎬 Rendering final video...',
-    'generating_thumbnail': '🖼️ Creating thumbnail...',
-  }
+  const currentStepIndex = STEPS.findIndex(s => s.key === status)
+  const fmtElapsed = (s: number) => s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`
 
   return (
     <div style={{
@@ -225,39 +248,96 @@ export default function Home() {
             background: 'rgba(255,255,255,0.03)',
             border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: '24px',
-            padding: '2.5rem',
+            padding: '2rem',
             backdropFilter: 'blur(20px)',
             boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
             marginTop: '1rem',
+            textAlign: 'left',
           }}>
-            <div style={{
-              fontSize: '0.85rem',
-              fontWeight: 600,
-              color: 'rgba(255,255,255,0.4)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.15em',
-              marginBottom: '1.5rem',
-            }}>
-              AI is working...
+
+            {/* Header row */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+                Processing Pipeline
+              </div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'rgba(255,255,255,0.35)', fontVariantNumeric: 'tabular-nums' }}>
+                ⏱ {fmtElapsed(elapsed)}
+              </div>
             </div>
 
-            <div style={{
-              fontSize: '1.2rem',
-              fontWeight: 600,
-              color: '#c084fc',
-              marginBottom: '1.5rem',
-              animation: 'progressPulse 2s ease-in-out infinite',
-            }}>
-              {statusLabels[status || ''] || status?.replace(/_/g, ' ') || 'Starting...'}
+            {/* Step list */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.5rem' }}>
+              {STEPS.map((step, i) => {
+                const done    = currentStepIndex > i
+                const active  = currentStepIndex === i
+                const pending = currentStepIndex < i
+                return (
+                  <div key={step.key} style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.6rem 0.75rem',
+                    borderRadius: '10px',
+                    background: active ? 'rgba(139,92,246,0.12)' : 'transparent',
+                    border: active ? '1px solid rgba(139,92,246,0.25)' : '1px solid transparent',
+                    transition: 'all 0.3s',
+                  }}>
+                    {/* Icon / check */}
+                    <div style={{
+                      width: '26px', height: '26px',
+                      borderRadius: '50%',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: done ? '0.75rem' : '0.9rem',
+                      flexShrink: 0,
+                      background: done ? 'rgba(52,211,153,0.2)' : active ? 'rgba(139,92,246,0.3)' : 'rgba(255,255,255,0.05)',
+                      color: done ? '#34d399' : active ? '#c084fc' : 'rgba(255,255,255,0.2)',
+                      transition: 'all 0.3s',
+                    }}>
+                      {done ? '✓' : step.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: '0.82rem',
+                        fontWeight: active ? 700 : 600,
+                        color: done ? 'rgba(255,255,255,0.5)' : active ? '#fff' : 'rgba(255,255,255,0.25)',
+                        transition: 'all 0.3s',
+                      }}>
+                        {step.label}
+                      </div>
+                      {active && detail && (
+                        <div style={{
+                          fontSize: '0.72rem',
+                          color: 'rgba(255,255,255,0.45)',
+                          marginTop: '0.15rem',
+                          animation: 'progressPulse 2s ease-in-out infinite',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {detail}
+                        </div>
+                      )}
+                    </div>
+                    {active && (
+                      <div style={{
+                        width: '6px', height: '6px', borderRadius: '50%',
+                        background: '#c084fc',
+                        animation: 'progressPulse 1s ease-in-out infinite',
+                        flexShrink: 0,
+                      }}/>
+                    )}
+                  </div>
+                )
+              })}
             </div>
 
             {/* Progress bar */}
             <div style={{
-              height: '8px',
+              height: '6px',
               background: 'rgba(255,255,255,0.06)',
               borderRadius: '999px',
               overflow: 'hidden',
-              marginBottom: '1rem',
+              marginBottom: '0.6rem',
             }}>
               <div style={{
                 height: '100%',
@@ -266,42 +346,11 @@ export default function Home() {
                 backgroundSize: '200% 100%',
                 animation: 'shimmer 2s linear infinite',
                 borderRadius: '999px',
-                transition: 'width 0.5s ease-out',
+                transition: 'width 0.6s ease-out',
               }}/>
             </div>
-
-            <div style={{
-              fontSize: '0.9rem',
-              color: 'rgba(255,255,255,0.3)',
-              fontWeight: 600,
-            }}>
+            <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.25)', fontWeight: 600, textAlign: 'right' }}>
               {progress}%
-            </div>
-
-            {/* Step indicators */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
-              gap: '0.5rem',
-              marginTop: '1.5rem',
-            }}>
-              {[
-                { label: 'Download', threshold: 10 },
-                { label: 'Find Peaks', threshold: 30 },
-                { label: 'Face Track', threshold: 50 },
-                { label: 'Captions', threshold: 70 },
-              ].map((step) => (
-                <div key={step.label} style={{
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  color: progress >= step.threshold ? '#c084fc' : 'rgba(255,255,255,0.2)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  transition: 'color 0.3s',
-                }}>
-                  {progress >= step.threshold ? '✓ ' : ''}{step.label}
-                </div>
-              ))}
             </div>
           </div>
         )}

@@ -37,6 +37,14 @@ jobs: dict = {}
 class VideoRequest(BaseModel):
     youtube_url: str
 
+def _fmt_time(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+def _update(job_id: str, status: str, progress: int, detail: str, **extra):
+    jobs[job_id] = {"status": status, "progress": progress, "detail": detail, "url": None, **extra}
+
 async def process_video_pipeline(youtube_url: str, job_id: str):
     """
     Background task: Downloads YT video, finds the best segment,
@@ -44,20 +52,25 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
     """
     job_dir = os.path.join(DOWNLOADS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
-    
+
     try:
-        jobs[job_id] = {"status": "downloading", "progress": 10, "url": None}
-        
+        _update(job_id, "downloading", 8, "Connecting to YouTube and fetching video stream...")
+
         # 1. Download
         dl_path = download_video(youtube_url, output_path=job_dir)
         if not dl_path:
             raise Exception("Failed to download video")
-            
-        jobs[job_id] = {"status": "analyzing_audio", "progress": 30, "url": None}
-        
+
+        file_mb = os.path.getsize(dl_path) / (1024 * 1024)
+        _update(job_id, "analyzing_audio", 22, f"Downloaded {file_mb:.0f} MB — scanning audio to find the best hook...")
+
         # 2. Find Best Segment
         start_t, end_t = extract_best_segment(dl_path, target_length_sec=45)
-        
+        clip_len = end_t - start_t
+
+        _update(job_id, "trimming", 32,
+                f"Clipping {clip_len:.0f}s segment ({_fmt_time(start_t)} → {_fmt_time(end_t)}) with frame-accurate re-encode...")
+
         # Trim with re-encode for frame-accurate A/V sync
         import subprocess
         from core.config import VIDEO_ENCODER_ARGS
@@ -66,47 +79,62 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
             "ffmpeg", "-y",
             "-ss", str(start_t),
             "-i", dl_path,
-            "-t", str(end_t - start_t),
+            "-t", str(clip_len),
             *VIDEO_ENCODER_ARGS,
             "-c:a", "aac",
             "-b:a", "192k",
             trimmed_path
         ], check=True)
-        
-        jobs[job_id] = {"status": "tracking_faces", "progress": 50, "url": None}
-        
+
+        _update(job_id, "tracking_faces", 48,
+                "Detecting faces frame-by-frame — spring-damper camera panning to 9:16...")
+
         # 3. Face Track and Crop
         cropped_path = os.path.join(job_dir, "cropped.mp4")
         track_success = track_and_crop_faces(trimmed_path, cropped_path)
         if not track_success:
             raise Exception("Face tracking/cropping failed")
-            
-        jobs[job_id] = {"status": "generating_captions", "progress": 70, "url": None}
-        
+
+        _update(job_id, "generating_captions", 65,
+                "Transcribing speech with Whisper AI (small model, Indonesian) — word-level timing...")
+
         # 4. Auto-caption (Whisper) — force Indonesian language for accuracy
         srt_path = generate_subtitles(cropped_path, model_size="small", language="id")
-        
-        jobs[job_id] = {"status": "rendering_final", "progress": 85, "url": None}
-        
+
+        # Count subtitle events for the detail message
+        try:
+            n_captions = srt_path and sum(1 for l in open(srt_path, encoding="utf-8") if l.startswith("Dialogue:"))
+        except Exception:
+            n_captions = 0
+
+        _update(job_id, "rendering_final", 80,
+                f"Burning {n_captions} caption groups into video with libass renderer...")
+
         # 5. Burn Subtitles
         final_path = os.path.join(job_dir, "final_short.mp4")
         burn_subtitles(cropped_path, srt_path, final_path)
-        
-        jobs[job_id] = {"status": "generating_thumbnail", "progress": 92, "url": None}
-        
+
+        final_mb = os.path.getsize(final_path) / (1024 * 1024)
+        _update(job_id, "generating_thumbnail", 92,
+                f"Final video is {final_mb:.1f} MB — picking best frame for thumbnail...")
+
         # 6. Generate thumbnail
         thumb_path = generate_thumbnail(final_path)
-        
+
         # Return paths
         public_url = f"/downloads/{job_id}/final_short.mp4"
         thumb_url = f"/downloads/{job_id}/{os.path.basename(thumb_path)}" if thumb_path else None
-        jobs[job_id] = {"status": "completed", "progress": 100, "url": public_url, "thumbnail": thumb_url}
-        
+        jobs[job_id] = {
+            "status": "completed", "progress": 100,
+            "detail": f"Done! {clip_len:.0f}s short • {final_mb:.1f} MB • {n_captions} caption groups",
+            "url": public_url, "thumbnail": thumb_url
+        }
+
     except Exception as e:
         print(f"Pipeline error for job {job_id}: {e}")
         import traceback
         traceback.print_exc()
-        jobs[job_id] = {"status": "failed", "progress": 0, "error": str(e), "url": None}
+        jobs[job_id] = {"status": "failed", "progress": 0, "detail": str(e), "error": str(e), "url": None}
 
 @app.post("/api/process")
 async def process_video_endpoint(req: VideoRequest, background_tasks: BackgroundTasks):
