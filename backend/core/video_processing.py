@@ -90,10 +90,11 @@ def track_and_crop_faces(input_video_path: str, output_video_path: str, target_r
 
     # Spring-damper camera system — simulates a physical camera operator.
     # Unlike simple lerp, this has velocity/momentum: the camera accelerates
-    # toward the face and decelerates naturally, with a subtle cinematic overshoot.
-    SPRING  = 0.06   # stiffness: how strongly camera pulls toward the target
-    DAMPING = 0.80   # velocity retention per frame (higher = more momentum/overshoot)
-    DEADZONE = 25    # px: ignore face jitter smaller than this
+    # toward the face and decelerates naturally, producing smooth cinematic pans.
+    SPRING  = 0.02   # stiffness: low = slow, smooth pulls toward the target
+    DAMPING = 0.90   # velocity retention per frame (high = gradual deceleration)
+    DEADZONE = 50    # px: ignore face jitter smaller than this
+    MAX_VELOCITY = 3.0  # px/frame: cap speed so camera never whips across
 
     target_x  = float(initial_center_x)
     camera_x  = float(initial_center_x)
@@ -107,16 +108,18 @@ def track_and_crop_faces(input_video_path: str, output_video_path: str, target_r
         if not ret:
             break
 
-        # Detect face every 4 frames (more responsive than 8)
-        if frames_processed % 4 == 0:
+        # Detect face every 6 frames to reduce noise
+        if frames_processed % 6 == 0:
             face_x = _find_face_in_frame(face_cascade, frame, frame_width)
             if face_x is not None and abs(face_x - last_detected_x) > DEADZONE:
+                # Blend new detection with previous to avoid sudden target jumps
                 last_detected_x = face_x
-                target_x = float(face_x)
+                target_x = target_x * 0.3 + float(face_x) * 0.7
 
         # Spring force pulls camera toward target; damping bleeds off velocity
         force     = (target_x - camera_x) * SPRING
         velocity  = velocity * DAMPING + force
+        velocity  = float(np.clip(velocity, -MAX_VELOCITY, MAX_VELOCITY))
         camera_x += velocity
 
         # Clamp so the crop window never goes out of frame

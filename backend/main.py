@@ -15,6 +15,8 @@ from core.audio_analysis import extract_best_segment
 from core.video_processing import track_and_crop_faces
 from core.captioning import generate_subtitles, burn_subtitles
 from core.thumbnail import generate_thumbnail
+from core.hook_generator import generate_hook_text
+from core.watermark_detect import detect_watermark
 
 # Ensure the downloads directory exists BEFORE app startup
 DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__) or ".", "downloads")
@@ -96,7 +98,7 @@ def _update(job_id: str, status: str, progress: int, detail: str, **extra):
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-async def process_video_pipeline(youtube_url: str, job_id: str):
+def process_video_pipeline(youtube_url: str, job_id: str):
     job_dir = os.path.join(DOWNLOADS_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
@@ -114,6 +116,18 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
             raise Exception("Failed to download video")
 
         file_mb = os.path.getsize(dl_path) / (1024 * 1024)
+
+        # Check file size
+        if file_mb > 800:
+            raise Exception(f"Video too large ({file_mb:.0f} MB). Maximum 800 MB.")
+        if file_mb < 150:
+            raise Exception(f"Video too small ({file_mb:.0f} MB). Minimum 150 MB.")
+
+        # Check for watermark
+        _update(job_id, "downloading", 15, f"Downloaded {file_mb:.0f} MB — checking for watermarks...")
+        if detect_watermark(dl_path):
+            raise Exception("Video contains a watermark. Please use a clean source video.")
+
         _update(job_id, "analyzing_audio", 22, f"Downloaded {file_mb:.0f} MB — scanning audio to find the best hook...")
 
         start_t, end_t = extract_best_segment(dl_path, target_length_sec=45)
@@ -147,7 +161,7 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         _update(job_id, "generating_captions", 65,
                 "Transcribing speech with Whisper AI (small model, Indonesian) — word-level timing...")
 
-        srt_path = generate_subtitles(cropped_path, model_size="small", language="id")
+        srt_path, transcript = generate_subtitles(cropped_path, model_size="small", language="id")
 
         try:
             n_captions = srt_path and sum(1 for l in open(srt_path, encoding="utf-8") if l.startswith("Dialogue:"))
@@ -160,11 +174,22 @@ async def process_video_pipeline(youtube_url: str, job_id: str):
         final_path = os.path.join(job_dir, "final_short.mp4")
         burn_subtitles(cropped_path, srt_path, final_path)
 
+        # Generate clickbait hook text from transcript
+        hook_text = generate_hook_text(transcript, language="id")
+
         final_mb = os.path.getsize(final_path) / (1024 * 1024)
         _update(job_id, "generating_thumbnail", 92,
-                f"Final video is {final_mb:.1f} MB — picking best frame for thumbnail...")
+                f"Final video is {final_mb:.1f} MB — adding hook text & generating thumbnail...")
 
-        thumb_path = generate_thumbnail(final_path)
+        thumb_path = generate_thumbnail(final_path, caption_text=hook_text)
+
+        # Cleanup intermediate files to save disk space
+        for tmp in [dl_path, trimmed_path, cropped_path, srt_path]:
+            try:
+                if tmp and os.path.isfile(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
 
         public_url = f"/downloads/{job_id}/final_short.mp4"
         thumb_url  = f"/downloads/{job_id}/{os.path.basename(thumb_path)}" if thumb_path else None
@@ -206,6 +231,42 @@ async def get_status(job_id: str):
 @app.get("/api/history")
 async def get_history():
     return _scan_history()
+
+@app.get("/api/processed")
+async def get_processed():
+    """List all processed videos from database."""
+    from core.db import get_all_processed
+    return get_all_processed()
+
+@app.get("/api/jobs-db")
+async def get_jobs_db():
+    """List all completed jobs from database."""
+    from core.db import get_all_jobs
+    return get_all_jobs()
+
+@app.post("/api/auto-clip")
+async def auto_clip_endpoint(background_tasks: BackgroundTasks):
+    """Trigger an auto-clip: find trending podcast → process it."""
+    from core.trending import find_trending_podcast
+    job_id = f"auto_{uuid.uuid4().hex[:8]}"
+    jobs[job_id] = {"status": "searching", "progress": 2, "detail": "Searching for trending podcast...", "url": None}
+
+    def run_auto_clip(job_id: str):
+        try:
+            video = find_trending_podcast()
+            if not video:
+                jobs[job_id] = {"status": "failed", "progress": 0, "detail": "No trending podcast found", "error": "No trending podcast found", "url": None}
+                return
+            _update(job_id, "downloading", 8, f"Found: {video['title'][:50]}... — downloading...")
+            process_video_pipeline(video["url"], job_id)
+            # Mark as processed
+            from core.trending import mark_as_processed
+            mark_as_processed(video["id"], video.get("title", ""), video.get("url", ""))
+        except Exception as e:
+            jobs[job_id] = {"status": "failed", "progress": 0, "detail": str(e), "error": str(e), "url": None}
+
+    background_tasks.add_task(run_auto_clip, job_id)
+    return {"message": "Auto-clip started — searching for trending podcast", "job_id": job_id}
 
 if __name__ == "__main__":
     import uvicorn

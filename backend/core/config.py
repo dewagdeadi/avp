@@ -32,6 +32,12 @@ def _check_nvenc() -> bool:
     except Exception:
         return False
 
+# Add NVIDIA cuBLAS DLLs to PATH (needed by CTranslate2 / faster-whisper)
+_CUBLAS_BIN = os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "cublas", "bin")
+if os.path.isdir(_CUBLAS_BIN) and _CUBLAS_BIN not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _CUBLAS_BIN + os.pathsep + os.environ.get("PATH", "")
+    print(f"[config] Added cuBLAS to PATH: {_CUBLAS_BIN}")
+
 # Auto-add on import
 ensure_ffmpeg_on_path()
 

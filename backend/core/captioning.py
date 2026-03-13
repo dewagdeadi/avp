@@ -17,12 +17,12 @@ def _get_whisper_model(model_size: str) -> WhisperModel:
         _whisper_model_size = model_size
     return _whisper_model
 
-def generate_subtitles(video_path: str, model_size="small", language="id") -> str:
+def generate_subtitles(video_path: str, model_size="small", language="id") -> tuple[str, str]:
     """
     Uses faster-whisper to generate an ASS subtitle file with WORD-LEVEL timing
     for tight sync between voice and on-screen text.
     language='id' forces Bahasa Indonesia recognition.
-    Returns the path to the ASS file.
+    Returns (ass_path, full_transcript_text).
     """
     print(f"Generating captions for {video_path} using Whisper ({model_size}, lang={language})...")
     model = _get_whisper_model(model_size)
@@ -103,8 +103,11 @@ def generate_subtitles(video_path: str, model_size="small", language="id") -> st
                 
                 f.write(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{phrase}\n")
 
+    # Collect full transcript for hook generation
+    full_transcript = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+
     print(f"ASS subtitle file saved: {ass_path}")
-    return ass_path
+    return ass_path, full_transcript
 
 def _seconds_to_ass_time(seconds: float) -> str:
     """Convert seconds to ASS time format: H:MM:SS.CC"""
